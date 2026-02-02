@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.venv/
+env/
+venv/
+
+# Data
+data/*
+
+# Logs and Outputs
+*.log
+*.out
+nohup.out
+
+# Generated Images (Root)
+*.png
+*.jpg
+*.jpeg
+
+# IDE settings
+.vscode/
+.idea/
+
+# Text files
+*.txt
+!requirements.txt
+!README.md
