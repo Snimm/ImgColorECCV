@@ -1,0 +1,15 @@
+-e musubi-tuner
+torch
+torchvision
+transformers
+diffusers
+opencv-python
+accelerate
+safetensors
+einops
+sentencepiece
+protobuf
+requests
+tqdm
+clean-fid
+matplotlib
