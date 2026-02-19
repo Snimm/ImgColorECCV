@@ -1,0 +1,9 @@
+[[datasets]]
+batch_size = 4
+resolution = [512, 512]
+image_jsonl_file = "/data/swarnim/ImgColorECCV/dataset.jsonl"
+auto_grayscale_control = true
+enable_bucket = true
+bucket_no_upscale = true
+caption_extension = ".txt"
+cache_directory = "/data/swarnim/ImgColorECCV/cache_latents"

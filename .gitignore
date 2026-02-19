@@ -1,31 +1,33 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
+# Models and Outputs
+models/
+outputs/
+eval_results_*/
+eval_results/
+cache_latents/
+*.safetensors
+*.ckpt
+*.pt
+*.pth
 
-# Environments
-.venv/
-env/
+# Virtual Environment
+.uv_venv/
+uv.lock
+.env
 venv/
 
-# Data
-data/*
-
-# Logs and Outputs
+# Logs and Temporary files
 *.log
 *.out
-nohup.out
+tmp/
+*.pyc
+__pycache__/
+.DS_Store
 
-# Generated Images (Root)
-*.png
-*.jpg
-*.jpeg
+# Datasets
+imagenet-mini/
+dataset
+*.jsonl
+dataset/
 
-# IDE settings
-.vscode/
-.idea/
-
-# Text files
+# Status files
 *.txt
-!requirements.txt
-!README.md

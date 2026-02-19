@@ -1,0 +1,27 @@
+[general]
+model_version = "klein-4b"
+output_dir = "/data/swarnim/ImgColorECCV/outputs/flux_klein_4b_colorization"
+output_name = "flux_klein_4b_colorization"
+dataset_config = "/data/swarnim/ImgColorECCV/dataset_config.toml"
+mixed_precision = "bf16"
+gradient_checkpointing = true
+max_train_epochs = 10
+save_every_n_epochs = 1
+sample_every_n_epochs = 1
+save_state = true
+seed = 42
+sdpa = true
+network_module = "musubi_tuner.networks.lora"
+network_dim = 16
+network_alpha = 16
+
+[optimizer]
+optimizer_type = "adamw"
+learning_rate = 1e-4
+lr_scheduler = "constant_with_warmup"
+lr_warmup_steps = 100
+
+[training]
+batch_size = 4
+gradient_accumulation_steps = 1
+max_grad_norm = 1.0
