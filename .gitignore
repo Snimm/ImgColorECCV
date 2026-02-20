@@ -25,9 +25,9 @@ __pycache__/
 
 # Datasets
 imagenet-mini/
-dataset
+/dataset
 *.jsonl
-dataset/
+/dataset/
 
 # Status files
 *.txt

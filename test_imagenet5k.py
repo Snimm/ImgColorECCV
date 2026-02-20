@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from PIL import Image
 import logging
+import json
 from transformers import Blip2Processor, Blip2ForConditionalGeneration
 
 # Set up logging
@@ -33,6 +34,8 @@ def main():
     parser.add_argument("--limit", type=int, default=10, help="Number of images to process")
     parser.add_argument("--flux_device", type=str, default="cuda:0", help="Device for Flux model")
     parser.add_argument("--blip_device", type=str, default="cuda:1", help="Device for BLIP model")
+    parser.add_argument("--caption_file", type=str, default=None, help="Path to JSONL file containing captions")
+    parser.add_argument("--grayscale_mode", type=str, default="standard", choices=["standard", "ortho"], help="Grayscale conversion mode: 'standard' (OpenCV) or 'ortho' ((B+G)/2)")
     args = parser.parse_args()
 
     # Settings for devices
@@ -40,17 +43,35 @@ def main():
     blip_device = args.blip_device
     logger.info(f"Flux Device: {flux_device}, BLIP Device: {blip_device}")
 
-    # 1. Load BLIP2 Model
-    logger.info("Loading BLIP2 model...")
-    processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b")
-    # Load in float16 to save memory
-    blip_model = Blip2ForConditionalGeneration.from_pretrained(
-        "Salesforce/blip2-opt-2.7b", torch_dtype=torch.float16
-    )
-    blip_model.to(blip_device)
-    logger.info("BLIP2 loaded.")
+    # 1. Load Captions if provided
+    caption_map = {}
+    if args.caption_file:
+        logger.info(f"Loading captions from {args.caption_file}...")
+        with open(args.caption_file, "r") as f:
+            for line in f:
+                try:
+                    data = json.loads(line)
+                    caption_map[data["file_name"]] = data["caption"]
+                except Exception as e:
+                    logger.warning(f"Failed to parse line in caption file: {e}")
+        logger.info(f"Loaded {len(caption_map)} captions.")
 
-    # 2. Load Flux Model Configuration
+    # 2. Load BLIP2 Model (Conditional)
+    processor = None
+    blip_model = None
+    if not args.caption_file:
+        logger.info("Loading BLIP2 model...")
+        processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b")
+        # Load in float16 to save memory
+        blip_model = Blip2ForConditionalGeneration.from_pretrained(
+            "Salesforce/blip2-opt-2.7b", torch_dtype=torch.float16
+        )
+        blip_model.to(blip_device)
+        logger.info("BLIP2 loaded.")
+    else:
+        logger.info("Skipping BLIP2 loading (using caption file).")
+
+    # 3. Load Flux Model Configuration
     class GenArgs:
         dit = "/data/swarnim/ImgColorECCV/models/flux_klein_4b/flux-2-klein-4b.safetensors"
         vae = "/data/swarnim/ImgColorECCV/models/flux_klein_4b/ae.safetensors"
@@ -119,78 +140,99 @@ def main():
     # Inference Loop
     for i, img_path in enumerate(image_paths):
         basename = os.path.basename(img_path)
+        save_path = os.path.join(args.output_dir, f"{os.path.splitext(basename)[0]}_colorized.jpg")
+        
+        if os.path.exists(save_path):
+            logger.info(f"[{i+1}/{len(image_paths)}] Skipping {basename} (Already exists)")
+            continue
+
         logger.info(f"[{i+1}/{len(image_paths)}] Processing {basename}")
         
         try:
-            # 1. Read Image
-            img = cv2.imread(img_path) # BGR
-            if img is None:
-                logger.warning(f"Failed to read {img_path}")
+            # 1. Get Caption
+            generated_text = None
+            if basename in caption_map:
+                generated_text = caption_map[basename]
+                logger.info(f"  Using pre-defined caption: {generated_text}")
+            elif blip_model is not None:
+                # 1. Read and Resize for BLIP (only if we need BLIP)
+                img = cv2.imread(img_path)
+                if img is None: continue
+                orig_h, orig_w = img.shape[:2]
+                max_dim = 512
+                scale = max_dim / max(orig_h, orig_w)
+                target_h = int(round(orig_h * scale / 16) * 16)
+                target_w = int(round(orig_w * scale / 16) * 16)
+                img_resized = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_AREA)
+                img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(img_rgb)
+                
+                inputs = processor(images=pil_image, return_tensors="pt").to(blip_device, torch.float16)
+                with torch.no_grad():
+                    generated_ids = blip_model.generate(**inputs)
+                    generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+                logger.info(f"  BLIP2 Caption: {generated_text}")
+            else:
+                logger.warning(f"  No caption found for {basename} and BLIP2 not loaded. Skipping.")
                 continue
 
-            # --- AR Fix Logic ---
+            # 2. Prepare Images for Flux
+            # We need the resized image and grayscale version regardless of where caption came from
+            img = cv2.imread(img_path)
+            if img is None: continue
             orig_h, orig_w = img.shape[:2]
             max_dim = 512
             scale = max_dim / max(orig_h, orig_w)
             target_h = int(round(orig_h * scale / 16) * 16)
             target_w = int(round(orig_w * scale / 16) * 16)
+            target_h, target_w = max(16, target_h), max(16, target_w)
             
-            # Ensure at least 16x16
-            target_h = max(16, target_h)
-            target_w = max(16, target_w)
-            
-            logger.info(f"  Resizing {orig_w}x{orig_h} -> {target_w}x{target_h}")
-            
-            # Resize image for processing
             img_resized = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_AREA)
             
-            # 2. Prepare BLIP2 (RGB)
-            img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-            pil_image = Image.fromarray(img_rgb)
+            # Select Grayscale Mode
+            if args.grayscale_mode == "ortho":
+                # Orthochromatic: (B + G) / 2
+                # OpenCV uses BGR order
+                b = img_resized[:, :, 0].astype(np.float32)
+                g = img_resized[:, :, 1].astype(np.float32)
+                gray = ((b + g) / 2.0).astype(np.uint8)
+                logger.info("  Using Orthochromatic Grayscale ((B+G)/2)")
+            else:
+                gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
             
-            # 3. Generate Caption
-            inputs = processor(images=pil_image, return_tensors="pt").to(blip_device, torch.float16)
-            with torch.no_grad():
-                generated_ids = blip_model.generate(**inputs)
-                generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
-            
-            logger.info(f"  Caption: {generated_text}")
-            
-            # 4. Prepare Control (Grayscale)
-            gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
             temp_control_path = os.path.join(args.output_dir, f"temp_control_{i}.jpg")
             cv2.imwrite(temp_control_path, gray)
 
-            # 5. Setup Args for Flux
-            gen_args.image_size = [target_h, target_w] # Set dynamic size
+            # 3. Setup Args for Flux
+            gen_args.image_size = [target_h, target_w] 
             gen_args.control_image_path = [temp_control_path]
             gen_args.prompt = generated_text
             gen_args.seed = 42 + i 
             
-            # 6. Generate with Flux
+            # 4. Generate with Flux
             returned_vae, latent = flux2_generate_image.generate(gen_args, gen_settings, shared_models=shared_models)
             
-            # 7. Decode and Save
+            # 5. Decode and Save
             if latent is not None:
                 decoded = flux2_generate_image.decode_latent(vae, latent, device)
-                
-                # Tensor to Numpy
                 decoded = (decoded / 2 + 0.5).clamp(0, 1)
                 decoded = decoded.float().cpu().permute(1, 2, 0).numpy()
                 decoded = (decoded * 255).astype(np.uint8)
                 decoded_img = Image.fromarray(decoded)
                 
-                # Save only the colorized output
-                # Resize decoded if slight mismatch (shouldn't happen with correct latent math but safe to ensure)
                 if decoded_img.size != (target_w, target_h):
-                     logger.warning(f"  Decoded size {decoded_img.size} mismatch target {(target_w, target_h)}, resizing.")
                      decoded_img = decoded_img.resize((target_w, target_h))
 
                 save_path = os.path.join(args.output_dir, f"{os.path.splitext(basename)[0]}_colorized.jpg")
                 decoded_img.save(save_path)
                 logger.info(f"Saved {save_path}")
+
+                # 6. Log Caption to JSONL (if it wasn't already in the input file)
+                if not args.caption_file:
+                    jsonl_path = os.path.join(args.output_dir, "captions.jsonl")
+                    with open(jsonl_path, "a") as f:
+                        f.write(json.dumps({"file_name": basename, "caption": generated_text}) + "\n")
             
-            # Cleanup
             if os.path.exists(temp_control_path):
                 os.remove(temp_control_path)
 
